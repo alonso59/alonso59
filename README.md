@@ -10,7 +10,7 @@ I'm an experienced Data Scientist and Engineer with a background in electrical e
 
 - 📍 Zapopan, Mexico / Bonn, Germany
 - 🌐 [github.com/alonso59](https://github.com/alonso59)
-- 📧 german.pinedo@cinvestav.mx
+- 📧 german.pinedo@mifral.com
 
 ---
 
