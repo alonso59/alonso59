@@ -17,7 +17,7 @@ I'm an experienced Data Scientist and Engineer with a background in electrical e
 ## 🛠️ Skills
 
 **Programming:**  
-C/C++, CUDA, Python
+C/C++, CUDA, Python, TypeScript
 
 **Frameworks:**  
 TensorFlow, PyTorch, scikit-learn, MxNet, TensorRT, Hugging Face, ONNX
