@@ -73,12 +73,13 @@ def feature_map_box(channels, height, width, color, opacity=0.75):
     front = face([bl, br, tr, tl], color)
 
     # top face (W × D)
+    mc = ManimColor(color)
     top = face([tl, tr, tr + offset, tl + offset],
-               interpolate_color(color, WHITE, 0.25))
+               interpolate_color(mc, ManimColor(WHITE), 0.25))
 
     # right face (D × H)
     right = face([br, br + offset, tr + offset, tr],
-                 interpolate_color(color, BLACK, 0.25))
+                 interpolate_color(mc, ManimColor(BLACK), 0.25))
 
     grp = VGroup(right, top, front)
     grp.center()
