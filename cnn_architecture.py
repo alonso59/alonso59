@@ -5,9 +5,12 @@ Explains visually how an MNIST digit "7" passes through two Conv2D layers:
 
   SCENE 1  Title
   SCENE 2  Input 1×32×32  → Conv1 (Ci=1, Co=2, k=3)  → Y1 2×30×30
-  SCENE 3  Transition: Y1 becomes new input for layer 2
+           Kernels K1/K2 slide over input, return to fixed home positions.
+           Output maps Y1[0] and Y1[1] are grouped into a pseudo-3D stack.
+  SCENE 3  Transition: Y1 stack slides left, becomes new input for layer 2
   SCENE 4  Conv2 (Ci=2, Co=4, k=3): 4×2 filter bank, detailed for ch-0
-  SCENE 5  Build the 4 output feature maps Y2 4×28×28
+           Bank kernel tiles slide over input maps and return home.
+  SCENE 5  Build the 4 output feature maps Y2 4×28×28 as a clean stack
   SCENE 6  Parameter summary
 """
 
@@ -127,6 +130,19 @@ def param_box(lines, colors=None):
     return VGroup(box, texs)
 
 
+# Stack offset used consistently across all stacking animations
+STACK_OFFSET = np.array([0.20, -0.20, 0])
+
+
+def stack_positions(center, n, offset=STACK_OFFSET):
+    """Return n target positions for a pseudo-3D stack centred at `center`."""
+    # The "top" map sits at the front; each subsequent map is offset
+    # so that it appears to be one layer behind.
+    total_shift = offset * (n - 1)
+    start = np.array(center) - total_shift / 2
+    return [start + offset * i for i in range(n)]
+
+
 # ── main scene ────────────────────────────────────────────────────────────────
 
 class CNNArchitecture(Scene):
@@ -219,6 +235,13 @@ class CNNArchitecture(Scene):
         self.play(FadeIn(k1_group), FadeIn(k2_group))
         self.wait(0.4)
 
+        # ---- record kernel home positions BEFORE any motion ------------------
+        # Use the grid centre (not the group centre) so the return target is
+        # always the exact starting position of the grid regardless of how
+        # the label has moved or whether the VGroup centre has shifted.
+        k1_grp_home = k1_grp.get_center().copy()
+        k2_grp_home = k2_grp.get_center().copy()
+
         # ---- two output feature maps (right) --------------------------------
         FM_N  = 6    # show 6×6 excerpt of 30×30 output
         CS_FM = 0.36
@@ -292,9 +315,9 @@ class CNNArchitecture(Scene):
                         sq.animate.set_fill(C_K1, opacity=rng.uniform(0.25, 0.7)))
         self.play(*fill_anims, run_time=0.5)
 
-        # reset k1 position
-        self.play(k1_grp.animate.move_to(k1_group.get_center()),
-                  FadeOut(patch), run_time=0.3)
+        # return K1 to its exact home position
+        self.play(k1_grp.animate.move_to(k1_grp_home),
+                  FadeOut(patch), run_time=0.4)
 
         # ---- animate sliding K2 on input → fills fm2 -------------------------
         patch2 = None
@@ -325,8 +348,9 @@ class CNNArchitecture(Scene):
                     fill_anims2.append(
                         sq.animate.set_fill(C_FM1, opacity=rng.uniform(0.25, 0.7)))
         self.play(*fill_anims2, run_time=0.5)
-        self.play(k2_grp.animate.move_to(k2_group.get_center()),
-                  FadeOut(patch2), run_time=0.3)
+        # return K2 to its exact home position
+        self.play(k2_grp.animate.move_to(k2_grp_home),
+                  FadeOut(patch2), run_time=0.4)
 
         # ---- layer-1 summary annotation -------------------------------------
         summary = MathTex(
@@ -335,7 +359,18 @@ class CNNArchitecture(Scene):
             r"\Omega_1=20",
             color=C_GREY, font_size=18).next_to(formula, UP, buff=0.15)
         self.play(FadeIn(summary))
-        self.wait(2.0)
+        self.wait(1.5)
+
+        # ---- stack the two Y1 output maps (pseudo-3D) -----------------------
+        # Compute the two target positions so the stack is centred where the
+        # maps currently are, then animate fm2 sliding into its stack slot.
+        current_center = VGroup(fm1_group, fm2_group).get_center()
+        pos0, pos1 = stack_positions(current_center, 2)
+        self.play(
+            fm1_group.animate.move_to(pos0),
+            fm2_group.animate.move_to(pos1),
+            run_time=0.8)
+        self.wait(0.5)
 
         # store references for scene 3 transition
         self._fm1_group  = fm1_group
@@ -354,24 +389,22 @@ class CNNArchitecture(Scene):
         self.play(FadeOut(self._scene2_all), Write(title3))
         self.wait(0.5)
 
-        # slide the two feature maps to the left side
-        target_pos = LEFT * 3.4
-        fm1_target = self._fm1_group.copy()
-        fm2_target = self._fm2_group.copy()
-        VGroup(fm1_target, fm2_target).arrange(DOWN, buff=0.5).move_to(target_pos)
+        # slide the stacked feature maps to the left side, keeping their
+        # relative stack offset so the pseudo-3D depth is preserved
+        target_center = LEFT * 3.4
+        pos0, pos1 = stack_positions(target_center, 2)
 
         self.play(
-            self._fm1_group.animate.move_to(fm1_target.get_center()),
-            self._fm2_group.animate.move_to(fm2_target.get_center()),
+            self._fm1_group.animate.move_to(pos0),
+            self._fm2_group.animate.move_to(pos1),
             run_time=1.0)
 
+        stack_vg = VGroup(self._fm1_group, self._fm2_group)
         new_inp_lbl = MathTex(
-            r"\text{New input to Layer 2}",
-            color=WHITE, font_size=20).next_to(
-                VGroup(self._fm1_group, self._fm2_group), UP, buff=0.2)
+            r"\text{Input to Layer 2}",
+            color=WHITE, font_size=20).next_to(stack_vg, UP, buff=0.22)
         y1_lbl = MathTex(r"Y_1\in\mathbb{R}^{2\times30\times30}",
-                         color=C_GREY, font_size=18).next_to(
-                             VGroup(self._fm1_group, self._fm2_group), DOWN, buff=0.1)
+                         color=C_GREY, font_size=18).next_to(stack_vg, DOWN, buff=0.15)
         ci_lbl = MathTex(r"C_i=2", color=C_GREY, font_size=20).next_to(
             y1_lbl, DOWN, buff=0.05)
 
@@ -475,23 +508,41 @@ class CNNArchitecture(Scene):
         fm2_cells_ref = [[fm2_grid[r * FM_N + c] for c in range(FM_N)]
                          for r in range(FM_N)]
 
-        def do_brief_slide(cells_ref, color, n_steps=4):
+        # ---- record home positions for the two o=0 kernel tiles -------------
+        k_c0 = bank_cells[0][0][0]   # grid VGroup for W2[0,0]
+        k_c1 = bank_cells[0][1][0]   # grid VGroup for W2[0,1]
+        k_c0_home = k_c0.get_center().copy()
+        k_c1_home = k_c1.get_center().copy()
+
+        def slide_kernel_on_map(kernel_grp, kernel_home, cells_ref, color,
+                                n_steps=3):
+            """
+            Slide `kernel_grp` over a few patch positions on `cells_ref`,
+            then animate it back to `kernel_home`.  The patch highlight and
+            the kernel tile move together so the viewer sees the kernel
+            scanning the feature map.
+            """
+            positions_ = [(0, 0), (0, 2), (1, 1), (2, 3)][:n_steps]
             patch_ = None
-            positions_ = [(0,0),(0,2),(1,1),(2,3)][:n_steps]
             for idx_, (r0, c0) in enumerate(positions_):
                 r0 = min(r0, FM_N - 3)
                 c0 = min(c0, FM_N - 3)
                 np_ = patch_rect(cells_ref, r0, c0, 3, 3,
                                  color=color, sw=2.2)
+                k_anim = kernel_grp.animate.move_to(np_.get_center())
                 if patch_ is None:
                     patch_ = np_
-                    self.play(FadeIn(patch_), run_time=0.3)
+                    self.play(FadeIn(patch_), k_anim, run_time=0.35)
                 else:
-                    self.play(Transform(patch_, np_), run_time=0.18)
-            return patch_
+                    self.play(Transform(patch_, np_), k_anim, run_time=0.22)
+            # return kernel tile to its exact home in the bank
+            return_anims = [kernel_grp.animate.move_to(kernel_home)]
+            if patch_ is not None:
+                return_anims.append(FadeOut(patch_))
+            self.play(*return_anims, run_time=0.40)
 
-        patch_on_fm1 = do_brief_slide(fm1_cells_ref, C_IN,    n_steps=3)
-        patch_on_fm2 = do_brief_slide(fm2_cells_ref, C_FM1,   n_steps=3)
+        slide_kernel_on_map(k_c0, k_c0_home, fm1_cells_ref, C_IN,  n_steps=3)
+        slide_kernel_on_map(k_c1, k_c1_home, fm2_cells_ref, C_FM1, n_steps=3)
 
         # show summation formula
         sum_formula = MathTex(
@@ -502,8 +553,7 @@ class CNNArchitecture(Scene):
         self.play(Write(sum_formula))
         self.wait(1.5)
 
-        self.play(FadeOut(patch_on_fm1), FadeOut(patch_on_fm2),
-                  FadeOut(detail_lbl))
+        self.play(FadeOut(detail_lbl))
 
         # ---- compact labels for ch 1-3 ---------------------------------------
         compact_lines = VGroup()
@@ -571,6 +621,14 @@ class CNNArchitecture(Scene):
             self.play(*fill_anims, run_time=0.5)
             self.wait(0.3)
 
+        self.wait(1.0)
+
+        # ---- collapse the 4 output maps into a pseudo-3D stack --------------
+        stack_center = ORIGIN + DOWN * 0.3
+        targets = stack_positions(stack_center, 4)
+        self.play(
+            *[og.animate.move_to(targets[i]) for i, og in enumerate(out_groups)],
+            run_time=1.2)
         self.wait(1.5)
 
         self._title5    = title5
