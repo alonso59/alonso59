@@ -1,111 +1,84 @@
 """
-CNN Architecture Visualizer  —  Manim Community v0.20+
-Replicates the "3-D feature-map volume" style seen in CNN explainer videos,
-showing each layer as a 3-D box whose dimensions reflect the tensor shape
-(C × H × W), with shape labels, operation labels, and transitions.
+CNN Step-by-Step Visualizer  —  Manim Community v0.20+
 
-Architecture (LeNet-style on 32×32 MNIST input):
-  Input      1  × 32 × 32
-  Conv1      6  × 28 × 28   (6 filters, 5×5, valid)
-  MaxPool1   6  × 14 × 14   (2×2)
-  Conv2      16 × 10 × 10   (16 filters, 5×5, valid)
-  MaxPool2   16 ×  5 ×  5   (2×2)
-  Flatten    400
-  FC1        120
-  FC2         84
-  Output      10
+Shows each operation animated step by step:
+  Input      1×32×32   — pixel grid excerpt
+  Conv1      6×30×30   — sliding 3×3 kernel, dot-product per step
+  ReLU                 — negative values clamped to 0
+  MaxPool1   6×15×15   — 2×2 sliding window, max selection
+  Conv2      16×12×12  — abbreviated sliding (multi-channel sum)
+  MaxPool2   16×6×6    — abbreviated
+  Flatten    576        — feature maps unrolling to vector
+  FC1        120        — weighted connections, y = Wx + b
+  FC2 / Out  84 → 10   — final projection
+  Pipeline             — full diagram with shapes
 """
 
 from manim import *
 import numpy as np
 
 # ── palette ──────────────────────────────────────────────────────────────────
-BG       = BLACK
-C_INPUT  = "#4FC3F7"   # light-blue
-C_CONV   = "#FFD54F"   # amber
-C_POOL   = "#EF9A9A"   # red-ish
-C_FC     = "#A5D6A7"   # green
-C_OUT    = "#CE93D8"   # purple
-C_ARROW  = "#90A4AE"   # grey
-C_LABEL  = WHITE
-C_SHAPE  = "#B0BEC5"   # dim grey
+BG      = BLACK
+C_IN    = "#4FC3F7"   # light blue   – input
+C_CONV  = "#FFD54F"   # amber        – kernels / conv output
+C_RELU  = "#FF8A65"   # orange       – relu
+C_POOL  = "#EF9A9A"   # rose         – pool
+C_FC    = "#A5D6A7"   # green        – fully-connected
+C_OUT   = "#CE93D8"   # purple       – output
+C_GREY  = "#B0BEC5"   # dim grey
+C_ARR   = "#90A4AE"   # arrow grey
+
+rng = np.random.default_rng(42)
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── grid helpers ──────────────────────────────────────────────────────────────
 
-def scale_dim(v, ref=32, max_size=2.4, min_size=0.18):
-    """Map a spatial dimension to a visual length (log scale)."""
-    return max(min_size, max_size * np.log2(v + 1) / np.log2(ref + 1))
-
-
-def scale_channels(c, ref=16, max_size=1.8, min_size=0.12):
-    """Map channel count to a visual depth."""
-    return max(min_size, max_size * np.log2(c + 1) / np.log2(ref + 1))
-
-
-def feature_map_box(channels, height, width, color, opacity=0.75):
-    """
-    Return a VGroup that looks like a 3-D rectangular prism in isometric style.
-    The box is centred at ORIGIN.
-      - width  → horizontal (X)
-      - height → vertical   (Y)
-      - depth  → channels   (Z, rendered as a diagonal offset)
-    """
-    w = scale_dim(width)
-    h = scale_dim(height)
-    d = scale_channels(channels)
-
-    # isometric offset direction
-    offset = (RIGHT * 0.5 + UP * 0.3) * d
-
-    # three faces
-    def face(corners, fc, stroke=WHITE, sw=1.2):
-        p = Polygon(*corners, fill_color=fc, fill_opacity=opacity,
-                    stroke_color=stroke, stroke_width=sw)
-        return p
-
-    # front face (W × H)
-    bl = np.array([-w / 2, -h / 2, 0])
-    br = np.array([ w / 2, -h / 2, 0])
-    tr = np.array([ w / 2,  h / 2, 0])
-    tl = np.array([-w / 2,  h / 2, 0])
-
-    front = face([bl, br, tr, tl], color)
-
-    # top face (W × D)
-    mc = ManimColor(color)
-    top = face([tl, tr, tr + offset, tl + offset],
-               interpolate_color(mc, ManimColor(WHITE), 0.25))
-
-    # right face (D × H)
-    right = face([br, br + offset, tr + offset, tr],
-                 interpolate_color(mc, ManimColor(BLACK), 0.25))
-
-    grp = VGroup(right, top, front)
+def make_grid(rows, cols, cs=0.44,
+              fill=C_IN, fill_op=0.15,
+              stroke=WHITE, sw=0.8):
+    """Return (VGroup, 2-D list[Square]) centred at origin."""
+    cells, grp = [], VGroup()
+    for r in range(rows):
+        row = []
+        for c in range(cols):
+            sq = Square(side_length=cs,
+                        fill_color=fill, fill_opacity=fill_op,
+                        stroke_color=stroke, stroke_width=sw)
+            sq.move_to(RIGHT * c * cs + DOWN * r * cs)
+            grp.add(sq)
+            row.append(sq)
+        cells.append(row)
     grp.center()
-    return grp, w, h, d, offset
+    return grp, cells
 
 
-# ── per-layer spec ────────────────────────────────────────────────────────────
+def val_labels(cells, vals, color=WHITE, fs=15):
+    """VGroup of MathTex labels inside each cell."""
+    g = VGroup()
+    for r, row in enumerate(cells):
+        for c, sq in enumerate(row):
+            t = MathTex(str(int(vals[r][c])), color=color, font_size=fs)
+            t.move_to(sq)
+            g.add(t)
+    return g
 
-LAYERS = [
-    dict(name="Input",    op="",               C=1,   H=32, W=32, color=C_INPUT),
-    dict(name="Conv1",    op=r"*K^{(1)}_{6\times1\times5\times5}",
-                                                C=6,   H=28, W=28, color=C_CONV),
-    dict(name="MaxPool1", op=r"\text{MaxPool}_{2\times2}",
-                                                C=6,   H=14, W=14, color=C_POOL),
-    dict(name="Conv2",    op=r"*K^{(2)}_{16\times6\times5\times5}",
-                                                C=16,  H=10, W=10, color=C_CONV),
-    dict(name="MaxPool2", op=r"\text{MaxPool}_{2\times2}",
-                                                C=16,  H=5,  W=5,  color=C_POOL),
-]
 
-FC_LAYERS = [
-    dict(name="Flatten", neurons=400, color=C_FC),
-    dict(name="FC1",     neurons=120, color=C_FC),
-    dict(name="FC2",     neurons=84,  color=C_FC),
-    dict(name="Output",  neurons=10,  color=C_OUT),
-]
+def patch_rect(cells, r0, c0, kr, kc, color=C_CONV, sw=2.5, fill_op=0.18):
+    """Highlight rectangle over cells[r0:r0+kr, c0:c0+kc]."""
+    tl = cells[r0][c0].get_corner(UL)
+    br = cells[r0+kr-1][c0+kc-1].get_corner(DR)
+    w, h = br[0]-tl[0], tl[1]-br[1]
+    rect = Rectangle(width=w, height=h,
+                     stroke_color=color, stroke_width=sw,
+                     fill_color=color, fill_opacity=fill_op)
+    rect.move_to((tl + br) / 2)
+    return rect
+
+
+def section_title(text, color, math=False):
+    if math:
+        return MathTex(text, color=color, font_size=28).to_edge(UP, buff=0.35)
+    return Text(text, color=color, font_size=28).to_edge(UP, buff=0.35)
 
 
 # ── main scene ────────────────────────────────────────────────────────────────
@@ -114,235 +87,521 @@ class CNNArchitecture(Scene):
 
     def construct(self):
         self.camera.background_color = BG
-        self._title_card()
-        self._conv_layers()
-        self._fc_layers()
-        self._full_pipeline()
+        self._title()
+        self._input_scene()
+        self._conv1_scene()
+        self._relu_scene()
+        self._pool1_scene()
+        self._conv2_scene()
+        self._pool2_scene()
+        self._flatten_scene()
+        self._fc_scene()
+        self._pipeline_scene()
 
-    # ── 0  title ─────────────────────────────────────────────────────────────
-    def _title_card(self):
-        t = Text("CNN on MNIST  32×32", color=WHITE, font_size=42)
+    # ── title ─────────────────────────────────────────────────────────────────
+    def _title(self):
+        t   = Text("CNN · Step by Step", color=WHITE, font_size=44)
         sub = MathTex(r"X \in \mathbb{R}^{1\times32\times32}",
-                      color=C_INPUT, font_size=32).next_to(t, DOWN, buff=0.3)
-        arch = MathTex(
-            r"\text{Conv}\to\text{Pool}\to\text{Conv}\to\text{Pool}"
-            r"\to\text{Flatten}\to\text{FC}^3",
-            color=C_SHAPE, font_size=26).next_to(sub, DOWN, buff=0.3)
-        self.play(Write(t), run_time=1.0)
-        self.play(FadeIn(sub, shift=UP * 0.2))
-        self.play(FadeIn(arch, shift=UP * 0.2))
+                      color=C_IN, font_size=30).next_to(t, DOWN, buff=0.3)
+        ops = MathTex(
+            r"\text{Conv} \to \text{ReLU} \to \text{Pool}"
+            r"\to \text{Conv} \to \text{Pool} \to \text{Flatten} \to \text{FC}",
+            color=C_GREY, font_size=22).next_to(sub, DOWN, buff=0.25)
+        self.play(Write(t))
+        self.play(FadeIn(sub, shift=UP*0.2), FadeIn(ops, shift=UP*0.2))
         self.wait(1.5)
-        self.play(FadeOut(VGroup(t, sub, arch)))
+        self.play(FadeOut(VGroup(t, sub, ops)))
 
-    # ── 1  conv + pool layers one-by-one ─────────────────────────────────────
-    def _conv_layers(self):
-        for i, layer in enumerate(LAYERS):
-            self._show_single_layer(layer, i)
+    # ── input ─────────────────────────────────────────────────────────────────
+    def _input_scene(self):
+        title = section_title("Input   X  ∈  ℝ¹×³²×³²", C_IN)
+        vals  = rng.integers(0, 10, (6, 6))
+        g, cells = make_grid(6, 6, 0.46, C_IN)
+        g.shift(LEFT * 0.3)
+        lbls = val_labels(cells, vals, C_IN, 15)
+        shp  = MathTex(r"1\times32\times32", color=C_GREY, font_size=28)\
+                       .next_to(g, RIGHT, buff=0.5)
+        note = MathTex(r"(\text{6}\times\text{6 excerpt shown})",
+                       color=C_GREY, font_size=20).next_to(shp, DOWN, buff=0.2)
+        self.play(Write(title), run_time=0.5)
+        self.play(Create(g), run_time=0.7)
+        self.play(LaggedStart(*[FadeIn(l) for l in lbls], lag_ratio=0.03),
+                  run_time=0.8)
+        self.play(Write(shp), Write(note))
+        self.wait(1.2)
+        self.play(FadeOut(VGroup(title, g, lbls, shp, note)))
 
-    def _show_single_layer(self, layer, idx):
-        C, H, W = layer["C"], layer["H"], layer["W"]
-        color    = layer["color"]
-        name     = layer["name"]
+    # ── conv1 — sliding 3×3 kernel ────────────────────────────────────────────
+    def _conv1_scene(self):
+        title = section_title(
+            r"\text{Conv1}:\ K^{(1)}\in\mathbb{R}^{6\times1\times3\times3}"
+            r"\;\Rightarrow\;6\times30\times30", C_CONV, math=True)
 
-        box, w, h, d, offset = feature_map_box(C, H, W, color)
-        box.move_to(ORIGIN + LEFT * 0.6)
+        G, K = 5, 3
+        OUT  = G - K + 1   # 3×3 output excerpt
 
-        # ── name top-left
-        title = Text(name, color=color, font_size=34).to_edge(UP, buff=0.4)
+        x_vals = np.array([[3, 1, 0, 2, 1],
+                           [0, 2, 1, 3, 0],
+                           [1, 0, 3, 1, 2],
+                           [2, 1, 0, 2, 1],
+                           [0, 2, 1, 0, 3]])
+        k_vals = np.array([[ 1,  0, -1],
+                           [ 1,  0, -1],
+                           [ 1,  0, -1]])
 
-        # ── shape label  C × H × W
-        shape_tex = MathTex(
-            rf"{C}", r"\times", rf"{H}", r"\times", rf"{W}",
-            color=WHITE, font_size=36)
-        shape_tex[0].set_color(C_CONV if C > 1 else C_INPUT)
-        shape_tex.next_to(box, RIGHT, buff=0.55)
+        CS = 0.45
+        # input (left)
+        ig, ic = make_grid(G, G, CS, C_IN)
+        ig.shift(LEFT * 3.3)
+        il = val_labels(ic, x_vals, C_IN, 14)
+        il_lbl = MathTex(r"X[0,\cdot,\cdot]", color=C_IN, font_size=22)\
+                         .next_to(ig, UP, buff=0.18)
 
-        # dimension arrows + text
-        w_arrow = DoubleArrow(
-            box.get_corner(DL), box.get_corner(DR),
-            color=C_SHAPE, stroke_width=1.5, tip_length=0.12,
-            buff=0.05).shift(DOWN * 0.15)
-        w_lbl = MathTex(rf"W={W}", color=C_SHAPE, font_size=20)\
-                        .next_to(w_arrow, DOWN, buff=0.08)
+        # kernel (centre)
+        kg, kc = make_grid(K, K, CS, C_CONV, fill_op=0.25, stroke=C_CONV)
+        kg.move_to(ORIGIN)
+        kl = val_labels(kc, k_vals, C_CONV, 14)
+        kl_lbl = MathTex(r"K^{(1)}[0,0,\cdot,\cdot]", color=C_CONV, font_size=22)\
+                         .next_to(kg, UP, buff=0.18)
 
-        h_arrow = DoubleArrow(
-            box.get_corner(DL), box.get_corner(UL),
-            color=C_SHAPE, stroke_width=1.5, tip_length=0.12,
-            buff=0.05).shift(LEFT * 0.15)
-        h_lbl = MathTex(rf"H={H}", color=C_SHAPE, font_size=20)\
-                        .next_to(h_arrow, LEFT, buff=0.08)
+        # output (right)
+        y_vals = np.array([[int(np.sum(x_vals[i:i+K, j:j+K]*k_vals))
+                            for j in range(OUT)] for i in range(OUT)])
+        og, oc = make_grid(OUT, OUT, CS, C_FC, fill_op=0.08, stroke=C_FC)
+        og.shift(RIGHT * 3.3)
+        ol_lbl = MathTex(r"Y_1[0,\cdot,\cdot]", color=C_FC, font_size=22)\
+                         .next_to(og, UP, buff=0.18)
 
-        # channel brace (along depth offset direction)
-        front_tl = box.get_corner(UL)
-        back_tl  = front_tl + offset
-        c_line   = Line(front_tl, back_tl, color=C_SHAPE, stroke_width=1.5)
-        c_lbl    = MathTex(rf"C={C}", color=C_SHAPE, font_size=20)\
-                           .next_to(back_tl, UP, buff=0.1)
-
-        # operation label (what produced this layer)
-        op_grp = VGroup()
-        if layer["op"]:
-            op_tex = MathTex(layer["op"], color=C_ARROW, font_size=24)\
-                             .to_edge(DOWN, buff=0.45)
-            op_grp.add(op_tex)
+        formula = MathTex(
+            r"Y[i,j]=\sum_{m,n}X[i{+}m,j{+}n]\cdot K[m,n]",
+            color=WHITE, font_size=22).to_edge(DOWN, buff=0.35)
 
         self.play(Write(title), run_time=0.5)
-        self.play(FadeIn(box), run_time=0.6)
-        self.play(
-            GrowArrow(w_arrow), Write(w_lbl),
-            GrowArrow(h_arrow), Write(h_lbl),
-            Create(c_line),     Write(c_lbl),
-            run_time=0.7)
-        self.play(Write(shape_tex), run_time=0.6)
-        if op_grp:
-            self.play(FadeIn(op_grp, shift=UP * 0.1))
+        self.play(Create(ig), Create(kg), Create(og), run_time=0.6)
+        self.play(LaggedStart(*[FadeIn(l) for l in il], lag_ratio=0.02),
+                  LaggedStart(*[FadeIn(l) for l in kl], lag_ratio=0.02),
+                  run_time=0.5)
+        self.play(Write(il_lbl), Write(kl_lbl), Write(ol_lbl))
+        self.play(Write(formula))
+        self.wait(0.3)
+
+        # sliding animation
+        patch    = None
+        out_lbls = VGroup()
+        for idx, (i, j) in enumerate([(i, j)
+                                       for i in range(OUT)
+                                       for j in range(OUT)]):
+            new_p = patch_rect(ic, i, j, K, K, C_CONV)
+            slow  = idx < 3
+
+            if patch is None:
+                patch = new_p
+                self.play(FadeIn(patch), run_time=0.3)
+            else:
+                self.play(Transform(patch, new_p),
+                          run_time=0.3 if slow else 0.12)
+
+            val = y_vals[i, j]
+            oc[i][j].set_fill(C_FC, opacity=0.5)
+            lbl = MathTex(str(val), color=C_FC, font_size=14).move_to(oc[i][j])
+            out_lbls.add(lbl)
+
+            if slow:
+                det = MathTex(rf"Y[{i},{j}]={val}",
+                              color=C_GREY, font_size=18)\
+                              .next_to(formula, UP, buff=0.15)
+                self.play(FadeIn(lbl), FadeIn(det), run_time=0.2)
+                self.wait(0.35)
+                self.play(FadeOut(det), run_time=0.12)
+            else:
+                self.play(Flash(oc[i][j], color=C_FC,
+                                flash_radius=CS*0.6, line_length=CS*0.28),
+                          FadeIn(lbl), run_time=0.1)
+
+        shp_note = MathTex(r"\text{shape: }6\times30\times30",
+                           color=C_GREY, font_size=22)\
+                           .next_to(og, DOWN, buff=0.25)
+        self.play(Write(shp_note))
         self.wait(1.2)
-
         self.play(FadeOut(VGroup(
-            title, box, shape_tex,
-            w_arrow, w_lbl, h_arrow, h_lbl,
-            c_line, c_lbl, op_grp)))
+            title, ig, il, il_lbl,
+            kg, kl, kl_lbl,
+            og, out_lbls, ol_lbl,
+            formula, shp_note, patch)))
 
-    # ── 2  FC layers ──────────────────────────────────────────────────────────
-    def _fc_layers(self):
-        for fc in FC_LAYERS:
-            self._show_fc_layer(fc)
+    # ── relu ──────────────────────────────────────────────────────────────────
+    def _relu_scene(self):
+        title = section_title(r"\text{ReLU}:\ f(x)=\max(0,x)",
+                               C_RELU, math=True)
 
-    def _show_fc_layer(self, fc):
-        n     = fc["neurons"]
-        color = fc["color"]
-        name  = fc["name"]
-
-        MAX_DOTS = 12
-        n_show   = min(n, MAX_DOTS)
-        spacing  = 0.38
-        dots = VGroup(*[
-            Circle(radius=0.13, fill_color=color,
-                   fill_opacity=0.85, stroke_width=0)
-            for _ in range(n_show)
-        ]).arrange(DOWN, buff=0.08).move_to(ORIGIN)
-
-        title = Text(name, color=color, font_size=34).to_edge(UP, buff=0.4)
-
-        shape_tex = MathTex(
-            rf"\mathbb{{R}}^{{{n}}}", color=WHITE, font_size=36)\
-            .next_to(dots, RIGHT, buff=0.55)
-
-        if n > MAX_DOTS:
-            ellipsis = MathTex(r"\vdots", color=C_SHAPE,
-                               font_size=28).next_to(dots, DOWN, buff=0.05)
-        else:
-            ellipsis = VGroup()
+        vals = np.array([[ 3, -1,  2, -2],
+                         [-1,  4, -3,  1],
+                         [ 2, -2,  5, -1],
+                         [-3,  1, -1,  3]])
+        g, cells = make_grid(4, 4, 0.52, C_RELU, fill_op=0.12, stroke=C_RELU)
+        g.move_to(ORIGIN)
+        lbls    = val_labels(cells, vals, WHITE, 18)
+        formula = MathTex(r"f(x)=\max(0,x)", color=C_RELU, font_size=32)\
+                          .to_edge(DOWN, buff=0.5)
 
         self.play(Write(title), run_time=0.4)
-        self.play(LaggedStart(*[FadeIn(d, shift=RIGHT * 0.1)
-                                for d in dots], lag_ratio=0.05), run_time=0.7)
-        if ellipsis:
-            self.play(FadeIn(ellipsis))
-        self.play(Write(shape_tex), run_time=0.5)
+        self.play(Create(g), run_time=0.5)
+        self.play(LaggedStart(*[FadeIn(l) for l in lbls], lag_ratio=0.04),
+                  run_time=0.5)
+        self.play(Write(formula))
+        self.wait(0.4)
+
+        # clamp negatives to 0
+        anims = []
+        for r in range(4):
+            for c in range(4):
+                if vals[r][c] < 0:
+                    cells[r][c].set_fill(C_RELU, opacity=0.02)
+                    new_lbl = MathTex("0", color=C_GREY, font_size=18)\
+                                      .move_to(cells[r][c])
+                    anims.append(Transform(lbls[r*4+c], new_lbl))
+
+        self.play(LaggedStart(*anims, lag_ratio=0.1), run_time=1.2)
         self.wait(1.0)
-        self.play(FadeOut(VGroup(title, dots, shape_tex, ellipsis)))
+        self.play(FadeOut(VGroup(title, g, lbls, formula)))
 
-    # ── 3  full pipeline panorama ─────────────────────────────────────────────
-    def _full_pipeline(self):
-        title = Text("Full Pipeline", color=WHITE, font_size=36)\
-                     .to_edge(UP, buff=0.35)
+    # ── maxpool 1 ─────────────────────────────────────────────────────────────
+    def _pool1_scene(self):
+        title = section_title(
+            r"\text{MaxPool }2\times2\;\Rightarrow\;6\times15\times15",
+            C_POOL, math=True)
+
+        vals = np.array([[3, 1, 2, 0],
+                         [0, 4, 1, 3],
+                         [2, 0, 5, 1],
+                         [1, 3, 0, 4]])
+        CS = 0.50
+
+        ig, ic = make_grid(4, 4, CS, C_POOL, fill_op=0.12, stroke=C_POOL)
+        ig.shift(LEFT * 2.8)
+        il     = val_labels(ic, vals, C_POOL, 16)
+        il_lbl = MathTex(r"Y_1[\cdot,\cdot,\cdot]", color=C_POOL,
+                         font_size=22).next_to(ig, UP, buff=0.18)
+
+        og, oc = make_grid(2, 2, CS*1.1, C_POOL, fill_op=0.08, stroke=C_POOL)
+        og.shift(RIGHT * 2.8)
+        ol_lbl = MathTex(r"\text{After Pool}", color=C_POOL,
+                         font_size=22).next_to(og, UP, buff=0.18)
+
+        formula = MathTex(
+            r"Y[i,j]=\max_{m,n\in\{0,1\}}\,X[2i{+}m,\,2j{+}n]",
+            color=WHITE, font_size=22).to_edge(DOWN, buff=0.35)
+
+        self.play(Write(title), run_time=0.5)
+        self.play(Create(ig), Create(og), run_time=0.5)
+        self.play(LaggedStart(*[FadeIn(l) for l in il], lag_ratio=0.04),
+                  run_time=0.5)
+        self.play(Write(il_lbl), Write(ol_lbl), Write(formula))
+        self.wait(0.3)
+
+        out_lbls = VGroup()
+        for pi in range(2):
+            for pj in range(2):
+                p    = patch_rect(ic, pi*2, pj*2, 2, 2, C_POOL)
+                win  = vals[pi*2:pi*2+2, pj*2:pj*2+2]
+                mx   = int(win.max())
+                mr, mc_ = divmod(int(win.argmax()), 2)
+                mc_sq = ic[pi*2+mr][pj*2+mc_]
+
+                self.play(FadeIn(p), run_time=0.3)
+                self.play(mc_sq.animate.set_fill(C_POOL, opacity=0.7),
+                          run_time=0.3)
+
+                mx_lbl = MathTex(str(mx), color=C_POOL, font_size=18)\
+                                 .move_to(mc_sq)
+                self.play(FadeIn(mx_lbl), run_time=0.15)
+                self.play(mx_lbl.animate.move_to(oc[pi][pj]),
+                          oc[pi][pj].animate.set_fill(C_POOL, opacity=0.55),
+                          run_time=0.4)
+                out_lbls.add(mx_lbl)
+                self.play(FadeOut(p), run_time=0.2)
+
+        shp = MathTex(r"\text{shape: }6\times15\times15",
+                      color=C_GREY, font_size=22).next_to(og, DOWN, buff=0.25)
+        self.play(Write(shp))
+        self.wait(1.2)
+        self.play(FadeOut(VGroup(
+            title, ig, il, il_lbl,
+            og, out_lbls, ol_lbl,
+            formula, shp)))
+
+    # ── conv2 (abbreviated) ───────────────────────────────────────────────────
+    def _conv2_scene(self):
+        title = section_title(
+            r"\text{Conv2}:\ K^{(2)}\in\mathbb{R}^{16\times6\times3\times3}"
+            r"\;\Rightarrow\;16\times12\times12", C_CONV, math=True)
+
+        G, K  = 5, 3
+        OUT   = G - K + 1
+        x_v   = rng.integers(0, 6, (G, G))
+        k_v   = rng.integers(-1, 2, (K, K))
+        CS    = 0.42
+
+        ig, ic = make_grid(G, G, CS, C_IN)
+        ig.shift(LEFT * 3.2)
+        il     = val_labels(ic, x_v, C_IN, 13)
+        il_lbl = MathTex(r"Y_1[c',\cdot,\cdot]", color=C_IN, font_size=20)\
+                         .next_to(ig, UP, buff=0.15)
+
+        kg, kc = make_grid(K, K, CS, C_CONV, fill_op=0.25, stroke=C_CONV)
+        kg.move_to(ORIGIN)
+        kl     = val_labels(kc, k_v, C_CONV, 13)
+        kl_lbl = MathTex(r"K^{(2)}[c,c',\cdot,\cdot]", color=C_CONV, font_size=20)\
+                         .next_to(kg, UP, buff=0.15)
+
+        og, oc = make_grid(OUT, OUT, CS, C_FC, fill_op=0.08, stroke=C_FC)
+        og.shift(RIGHT * 3.2)
+        ol_lbl = MathTex(r"Y_2[c,\cdot,\cdot]", color=C_FC, font_size=20)\
+                         .next_to(og, UP, buff=0.15)
+
+        formula = MathTex(
+            r"Y_2[c,i,j]=\sum_{c'}\sum_{m,n}Y_1[c',i{+}m,j{+}n]\cdot K^{(2)}[c,c',m,n]",
+            color=WHITE, font_size=18).to_edge(DOWN, buff=0.35)
+
+        self.play(Write(title), run_time=0.4)
+        self.play(Create(ig), Create(kg), Create(og), run_time=0.5)
+        self.play(LaggedStart(*[FadeIn(l) for l in VGroup(*il, *kl)],
+                               lag_ratio=0.02), run_time=0.5)
+        self.play(Write(il_lbl), Write(kl_lbl), Write(ol_lbl), Write(formula))
+        self.wait(0.3)
+
+        patch    = None
+        out_lbls = VGroup()
+        for idx, (i, j) in enumerate([(i, j) for i in range(OUT)
+                                               for j in range(OUT)]):
+            new_p = patch_rect(ic, i, j, K, K, C_CONV)
+            val   = int(np.sum(x_v[i:i+K, j:j+K] * k_v))
+            if patch is None:
+                patch = new_p
+                self.play(FadeIn(patch), run_time=0.2)
+            else:
+                self.play(Transform(patch, new_p),
+                          run_time=0.18 if idx < 2 else 0.10)
+            oc[i][j].set_fill(C_FC, opacity=0.45)
+            lbl = MathTex(str(val), color=C_FC, font_size=13).move_to(oc[i][j])
+            out_lbls.add(lbl)
+            self.play(FadeIn(lbl), run_time=0.08)
+
+        shp = MathTex(r"\text{shape: }16\times12\times12",
+                      color=C_GREY, font_size=22).next_to(og, DOWN, buff=0.25)
+        self.play(Write(shp))
+        self.wait(1.0)
+        self.play(FadeOut(VGroup(
+            title, ig, il, il_lbl,
+            kg, kl, kl_lbl,
+            og, out_lbls, ol_lbl,
+            formula, shp, patch)))
+
+    # ── maxpool 2 (abbreviated) ───────────────────────────────────────────────
+    def _pool2_scene(self):
+        title = section_title(
+            r"\text{MaxPool }2\times2\;\Rightarrow\;16\times6\times6",
+            C_POOL, math=True)
+
+        vals = np.array([[5, 2, 3, 1],
+                         [1, 3, 4, 2],
+                         [0, 4, 1, 5],
+                         [3, 1, 2, 3]])
+        CS = 0.50
+        ig, ic = make_grid(4, 4, CS, C_POOL, fill_op=0.12, stroke=C_POOL)
+        ig.shift(LEFT * 2.8)
+        il     = val_labels(ic, vals, C_POOL, 16)
+        og, oc = make_grid(2, 2, CS*1.1, C_POOL, fill_op=0.08, stroke=C_POOL)
+        og.shift(RIGHT * 2.8)
+        formula = MathTex(
+            r"Y[i,j]=\max_{m,n\in\{0,1\}}\,X[2i{+}m,\,2j{+}n]",
+            color=WHITE, font_size=22).to_edge(DOWN, buff=0.35)
+
+        self.play(Write(title), Create(ig), Create(og), run_time=0.5)
+        self.play(LaggedStart(*[FadeIn(l) for l in il], lag_ratio=0.04),
+                  run_time=0.4)
+        self.play(Write(formula))
+
+        out_lbls = VGroup()
+        for pi in range(2):
+            for pj in range(2):
+                p   = patch_rect(ic, pi*2, pj*2, 2, 2, C_POOL)
+                win = vals[pi*2:pi*2+2, pj*2:pj*2+2]
+                mx  = int(win.max())
+                self.play(FadeIn(p), run_time=0.25)
+                lbl = MathTex(str(mx), color=C_POOL, font_size=18)\
+                              .move_to(oc[pi][pj])
+                oc[pi][pj].set_fill(C_POOL, opacity=0.55)
+                self.play(FadeIn(lbl), run_time=0.2)
+                out_lbls.add(lbl)
+                self.play(FadeOut(p), run_time=0.15)
+
+        shp = MathTex(r"\text{shape: }16\times6\times6",
+                      color=C_GREY, font_size=22).next_to(og, DOWN, buff=0.25)
+        self.play(Write(shp))
+        self.wait(1.0)
+        self.play(FadeOut(VGroup(title, ig, il, og, out_lbls, formula, shp)))
+
+    # ── flatten ───────────────────────────────────────────────────────────────
+    def _flatten_scene(self):
+        title = section_title(
+            r"\text{Flatten}:\ 16\times6\times6\;\Rightarrow\;\mathbb{R}^{576}",
+            C_FC, math=True)
+
+        # 3 stacked 3×3 grids (representing 3 of 16 feature maps)
+        fmaps = VGroup()
+        for i in range(3):
+            g, _ = make_grid(3, 3, 0.30, C_FC,
+                             fill_op=0.18 + i*0.1, stroke=C_FC)
+            g.shift(RIGHT*i*0.16 + UP*i*0.16)
+            fmaps.add(g)
+        fmaps.shift(LEFT * 3.2)
+        fm_lbl = MathTex(r"Y\in\mathbb{R}^{16\times6\times6}",
+                         color=C_FC, font_size=22)\
+                         .next_to(fmaps, DOWN, buff=0.3)
+
+        # destination vector
+        N_SHOW = 14
+        dots = VGroup(*[
+            Dot(radius=0.07, color=C_FC, fill_opacity=0.85)
+            for _ in range(N_SHOW)
+        ]).arrange(DOWN, buff=0.06).shift(RIGHT * 2.8)
+        ell = MathTex(r"\vdots", color=C_GREY, font_size=22)\
+                      .next_to(dots, DOWN, buff=0.05)
+        vec_lbl = MathTex(r"\mathbb{R}^{576}", color=C_FC, font_size=26)\
+                          .next_to(dots, RIGHT, buff=0.3)
+
+        arr = Arrow(fmaps.get_right(), dots.get_left(),
+                    color=C_ARR, buff=0.15, stroke_width=2)
+
+        self.play(Write(title), run_time=0.4)
+        self.play(LaggedStart(*[FadeIn(g) for g in fmaps], lag_ratio=0.2),
+                  run_time=0.6)
+        self.play(Write(fm_lbl))
+        self.wait(0.4)
+        self.play(GrowArrow(arr))
+        self.play(LaggedStart(*[FadeIn(d, shift=RIGHT*0.1) for d in dots],
+                               lag_ratio=0.04), run_time=0.7)
+        self.play(FadeIn(ell), Write(vec_lbl))
+        self.wait(1.0)
+        self.play(FadeOut(VGroup(title, fmaps, fm_lbl, arr, dots, ell, vec_lbl)))
+
+    # ── fully-connected ───────────────────────────────────────────────────────
+    def _fc_scene(self):
+        title = section_title(
+            r"\mathbb{R}^{576}\xrightarrow{W_1}\mathbb{R}^{120}"
+            r"\xrightarrow{W_2}\mathbb{R}^{84}"
+            r"\xrightarrow{W_3}\mathbb{R}^{10}",
+            C_FC, math=True)
+
+        N_IN, N_OUT = 5, 4
+        RAD = 0.15
+        in_dots = VGroup(*[
+            Circle(radius=RAD, fill_color=C_IN, fill_opacity=0.85,
+                   stroke_width=0) for _ in range(N_IN)
+        ]).arrange(DOWN, buff=0.3).move_to(LEFT * 3.2)
+
+        out_dots = VGroup(*[
+            Circle(radius=RAD, fill_color=C_FC, fill_opacity=0.85,
+                   stroke_width=0) for _ in range(N_OUT)
+        ]).arrange(DOWN, buff=0.4).move_to(RIGHT * 3.2)
+
+        lines = VGroup(*[
+            Line(d_in.get_right(), d_out.get_left(),
+                 stroke_width=0.5, stroke_color=C_GREY, stroke_opacity=0.35)
+            for d_in in in_dots for d_out in out_dots
+        ])
+
+        in_lbl  = MathTex(r"\mathbf{x}\in\mathbb{R}^{576}",
+                          color=C_IN, font_size=22)\
+                          .next_to(in_dots, DOWN, buff=0.25)
+        out_lbl = MathTex(r"\mathbf{y}\in\mathbb{R}^{120}",
+                          color=C_FC, font_size=22)\
+                          .next_to(out_dots, DOWN, buff=0.25)
+        ell_in  = MathTex(r"\vdots", color=C_GREY, font_size=20)\
+                          .next_to(in_dots, UP, buff=0.1)
+        ell_out = MathTex(r"\vdots", color=C_GREY, font_size=20)\
+                          .next_to(out_dots, UP, buff=0.1)
+
+        formula = MathTex(r"y_j=\sum_{i}w_{ji}\,x_i+b_j",
+                          color=WHITE, font_size=28)\
+                          .to_edge(DOWN, buff=0.45)
+
+        self.play(Write(title), run_time=0.5)
+        self.play(Create(lines), run_time=0.4)
+        self.play(FadeIn(in_dots), FadeIn(out_dots))
+        self.play(Write(in_lbl), Write(out_lbl),
+                  FadeIn(ell_in), FadeIn(ell_out))
+        self.play(Write(formula))
+        self.wait(0.5)
+
+        # highlight one output neuron's fan-in
+        hi_lines = VGroup(*[
+            Line(in_dots[i].get_right(), out_dots[1].get_left(),
+                 stroke_width=2.2, stroke_color=C_CONV)
+            for i in range(N_IN)
+        ])
+        hi_dot = out_dots[1].copy().set_fill(WHITE, opacity=0.9)
+        detail = MathTex(
+            r"y_1=w_{10}x_0+\cdots+w_{1,575}x_{575}+b_1",
+            color=C_CONV, font_size=16)\
+            .next_to(formula, UP, buff=0.2)
+
+        self.play(LaggedStart(*[Create(l) for l in hi_lines], lag_ratio=0.1),
+                  run_time=0.7)
+        self.play(Transform(out_dots[1], hi_dot), FadeIn(detail))
+        self.wait(1.0)
+
+        seq = MathTex(r"576\to120\to84\to10",
+                      color=C_GREY, font_size=26)\
+                      .next_to(title, DOWN, buff=0.15)
+        self.play(Write(seq))
+        self.wait(1.0)
+        self.play(FadeOut(VGroup(
+            title, lines, in_dots, out_dots,
+            in_lbl, out_lbl, ell_in, ell_out,
+            formula, hi_lines, detail, seq)))
+
+    # ── full pipeline diagram ─────────────────────────────────────────────────
+    def _pipeline_scene(self):
+        title = Text("Full Pipeline  —  LeNet on MNIST 32×32",
+                     color=WHITE, font_size=28).to_edge(UP, buff=0.4)
+
+        specs = [
+            ("Input",    C_IN,   r"1\!\times\!32\!\times\!32"),
+            ("Conv1",    C_CONV, r"6\!\times\!30\!\times\!30"),
+            ("ReLU",     C_RELU, r"6\!\times\!30\!\times\!30"),
+            ("Pool1",    C_POOL, r"6\!\times\!15\!\times\!15"),
+            ("Conv2",    C_CONV, r"16\!\times\!12\!\times\!12"),
+            ("ReLU",     C_RELU, r"16\!\times\!12\!\times\!12"),
+            ("Pool2",    C_POOL, r"16\!\times\!6\!\times\!6"),
+            ("Flatten",  C_FC,   r"576"),
+            ("FC1",      C_FC,   r"120"),
+            ("FC2",      C_FC,   r"84"),
+            ("Output",   C_OUT,  r"10"),
+        ]
+
+        entries = VGroup()
+        for name, col, shp in specs:
+            lbl     = Text(name, color=col, font_size=14)
+            shp_tex = MathTex(shp, color=C_GREY, font_size=11)
+            content = VGroup(lbl, shp_tex).arrange(DOWN, buff=0.05)
+            rect    = SurroundingRectangle(content, color=col,
+                                           buff=0.1, corner_radius=0.07)
+            entries.add(VGroup(rect, content))
+
+        entries.arrange(RIGHT, buff=0.14).center().shift(DOWN * 0.1)
+
+        arrows = VGroup(*[
+            Arrow(entries[i].get_right(), entries[i+1].get_left(),
+                  buff=0.04, color=C_ARR, stroke_width=1.5,
+                  max_tip_length_to_length_ratio=0.3)
+            for i in range(len(entries)-1)
+        ])
+
         self.play(Write(title))
-
-        # Build all boxes scaled to fit in one scene
-        all_layers = [
-            ("Input",    C_INPUT, 1,  32, 32),
-            ("Conv1",    C_CONV,  6,  28, 28),
-            ("Pool1",    C_POOL,  6,  14, 14),
-            ("Conv2",    C_CONV,  16, 10, 10),
-            ("Pool2",    C_POOL,  16,  5,  5),
-        ]
-
-        # scale everything down to fit
-        SCALE = 0.45
-        boxes   = []
-        labels  = []
-        shapes  = []
-
-        x_pos = -5.8
-        prev_right = None
-        arrows = VGroup()
-
-        for name, col, C, H, W in all_layers:
-            box, w, h, d, off = feature_map_box(C, H, W, col, opacity=0.8)
-            box.scale(SCALE).move_to([x_pos + (w * SCALE) / 2, -0.2, 0])
-
-            lbl = Text(name, color=col, font_size=16)\
-                       .next_to(box, UP, buff=0.12)
-            shp = MathTex(
-                rf"{C}\times{H}\times{W}",
-                color=C_SHAPE, font_size=14)\
-                .next_to(box, DOWN, buff=0.12)
-
-            boxes.append(box)
-            labels.append(lbl)
-            shapes.append(shp)
-
-            if prev_right is not None:
-                arr = Arrow(prev_right, box.get_left(),
-                            buff=0.06, color=C_ARROW,
-                            stroke_width=1.5,
-                            max_tip_length_to_length_ratio=0.3)
-                arrows.add(arr)
-
-            prev_right = box.get_right()
-            x_pos += w * SCALE + d * SCALE * 0.5 + 0.55
-
-        # FC blocks as thin vertical bars
-        fc_specs = [
-            ("Flatten\n400", C_FC,  400),
-            ("FC1\n120",     C_FC,  120),
-            ("FC2\n84",      C_FC,   84),
-            ("Out\n10",      C_OUT,  10),
-        ]
-        fc_boxes  = []
-        fc_labels = []
-
-        for fc_name, fc_col, n in fc_specs:
-            bar_h = max(0.18, 2.0 * np.log2(n + 1) / np.log2(401)) * SCALE * 1.8
-            bar = Rectangle(width=0.22, height=bar_h,
-                            fill_color=fc_col, fill_opacity=0.85,
-                            stroke_width=0.8, stroke_color=WHITE)
-            bar.move_to([x_pos + 0.11, -0.2, 0])
-            fc_lbl = Text(fc_name, color=fc_col, font_size=13)\
-                          .next_to(bar, DOWN, buff=0.1)
-            arr = Arrow(prev_right, bar.get_left(),
-                        buff=0.06, color=C_ARROW,
-                        stroke_width=1.5,
-                        max_tip_length_to_length_ratio=0.3)
-            arrows.add(arr)
-            fc_boxes.append(bar)
-            fc_labels.append(fc_lbl)
-            prev_right = bar.get_right()
-            x_pos += 0.65
-
-        all_mobs = VGroup(
-            *boxes, *labels, *shapes,
-            *fc_boxes, *fc_labels, arrows)
-
-        # centre in frame
-        all_mobs.center().shift(DOWN * 0.15)
-
-        self.play(
-            LaggedStart(
-                *[FadeIn(b) for b in boxes],
-                lag_ratio=0.15),
-            run_time=1.5)
-        self.play(
-            LaggedStart(
-                *[FadeIn(VGroup(l, s)) for l, s in zip(labels, shapes)],
-                lag_ratio=0.15),
-            run_time=1.0)
-        self.play(Create(arrows), run_time=1.0)
-        self.play(
-            LaggedStart(
-                *[FadeIn(VGroup(b, l)) for b, l in zip(fc_boxes, fc_labels)],
-                lag_ratio=0.2),
-            run_time=1.0)
+        self.play(LaggedStart(*[FadeIn(e) for e in entries],
+                               lag_ratio=0.1), run_time=2.0)
+        self.play(LaggedStart(*[GrowArrow(a) for a in arrows],
+                               lag_ratio=0.08), run_time=1.5)
         self.wait(3.0)
-        self.play(FadeOut(VGroup(title, all_mobs)))
